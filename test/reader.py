@@ -1,6 +1,7 @@
 # coding=utf-8
 from unittest import *
 import hiredis
+import sys
 
 class ReaderTest(TestCase):
   def setUp(self):
@@ -24,6 +25,14 @@ class ReaderTest(TestCase):
     self.reader.feed(b"x")
     self.assertRaises(RuntimeError, self.reply)
 
+  def test_protocol_error_with_custom_callable(self):
+    class CustomException(Exception):
+      pass
+
+    self.reader = hiredis.Reader(protocolError=lambda e: CustomException(e))
+    self.reader.feed(b"x")
+    self.assertRaises(CustomException, self.reply)
+
   def test_fail_with_wrong_protocol_error_class(self):
     self.assertRaises(TypeError, hiredis.Reader, protocolError="wrong")
 
@@ -40,6 +49,17 @@ class ReaderTest(TestCase):
     error = self.reply()
 
     self.assertEquals(RuntimeError, type(error))
+    self.assertEquals(("error",), error.args)
+
+  def test_error_string_with_custom_callable(self):
+    class CustomException(Exception):
+      pass
+
+    self.reader = hiredis.Reader(replyError=lambda e: CustomException(e))
+    self.reader.feed(b"-error\r\n")
+    error = self.reply()
+
+    self.assertEquals(CustomException, type(error))
     self.assertEquals(("error",), error.args)
 
   def test_fail_with_wrong_reply_error_class(self):
@@ -114,6 +134,10 @@ class ReaderTest(TestCase):
     self.reader.feed(b"*2\r\n*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n$1\r\n!\r\n")
     self.assertEquals([[b"hello", b"world"], b"!"], self.reply())
 
+  def test_nested_multi_bulk_depth(self):
+    self.reader.feed(b"*1\r\n*1\r\n*1\r\n*1\r\n$1\r\n!\r\n")
+    self.assertEquals([[[[b"!"]]]], self.reply())
+
   def test_subclassable(self):
     class TestReader(hiredis.Reader):
       def __init__(self, *args, **kwargs):
@@ -122,3 +146,26 @@ class ReaderTest(TestCase):
     reader = TestReader()
     reader.feed(b"+ok\r\n")
     self.assertEquals(b"ok", reader.gets())
+
+  def test_invalid_offset(self):
+    data = b"+ok\r\n"
+    self.assertRaises(ValueError, self.reader.feed, data, 6)
+
+  def test_invalid_length(self):
+    data = b"+ok\r\n"
+    self.assertRaises(ValueError, self.reader.feed, data, 0, 6)
+
+  def test_ok_offset(self):
+    data = b"blah+ok\r\n"
+    self.reader.feed(data, 4)
+    self.assertEquals(b"ok", self.reply())
+
+  def test_ok_length(self):
+    data = b"blah+ok\r\n"
+    self.reader.feed(data, 4, len(data)-4)
+    self.assertEquals(b"ok", self.reply())
+
+  def test_feed_bytearray(self):
+    if sys.hexversion >= 0x02060000:
+      self.reader.feed(bytearray(b"+ok\r\n"))
+      self.assertEquals(b"ok", self.reply())
